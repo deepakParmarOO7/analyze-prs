@@ -1,4 +1,4 @@
-// server.js (ESM-compatible)
+// server.js
 import express from 'express'
 import dotenv from 'dotenv'
 import cors from 'cors'
@@ -17,13 +17,26 @@ const openai = new OpenAI({
 app.use(cors())
 app.use(bodyParser.json())
 
-app.post('/api/summarize', async (req, res) => {
+// Batch analyze multiple comments
+app.post('/api/analyze-comments', async (req, res) => {
   try {
-    const { comment, codeSnippet, file, line } = req.body
+    const { comments } = req.body // expects an array
 
-    const prompt = `You are a senior developer reviewing code. Given the following PR comment and code, explain:
+    if (!comments || !Array.isArray(comments)) {
+      return res.status(400).json({ error: 'comments[] required' })
+    }
 
-1. What the reviewer is trying to say
+    const results = await Promise.all(
+      comments.map(async ({ comment, codeSnippet, file, line }) => {
+        const prompt = `
+You are a senior developer reviewing code. 
+Given the following PR comment and code, respond in JSON with:
+{
+  "summary": "what the reviewer means",
+  "validity": "valid | outdated | unclear",
+  "improvements": "possible improvements for the code",
+  "bestPractices": "related best practices"
+}
 
 Comment:
 "${comment}"
@@ -32,18 +45,34 @@ Code Snippet:
 ${codeSnippet}
 
 File: ${file}
-Line: ${line}`
+Line: ${line}
+        `
 
-    const response = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
-      messages: [{ role: 'user', content: prompt }],
-      temperature: 0.5
-    })
+        try {
+          const response = await openai.chat.completions.create({
+            model: 'gpt-4o-mini',
+            messages: [{ role: 'user', content: prompt }],
+            temperature: 0.3,
+            response_format: { type: 'json_object' } // force JSON output
+          })
 
-    res.json({ summary: response.choices[0].message.content })
+          return {
+            file,
+            line,
+            comment,
+            ai: JSON.parse(response.choices[0].message.content)
+          }
+        } catch (err) {
+          console.error('❌ OpenAI error on one comment:', err)
+          return { file, line, comment, ai: { summary: '', validity: 'error', improvements: '', bestPractices: '' } }
+        }
+      })
+    )
+
+    res.json(results)
   } catch (err) {
     console.error('❌ OpenAI Error:', err)
-    res.status(500).json({ error: err })
+    res.status(500).json({ error: err.message })
   }
 })
 
